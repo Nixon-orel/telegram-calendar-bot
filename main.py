@@ -63,12 +63,12 @@ def init_db():
     ''')
     
     # Создаем таблицу для настроек пользователей
-    cursor.execute('''
+    cursor.execute(f'''
     CREATE TABLE IF NOT EXISTS user_settings (
         user_id INTEGER PRIMARY KEY,
-        timezone TEXT NOT NULL DEFAULT ?
+        timezone TEXT NOT NULL DEFAULT '{config.DEFAULT_TIMEZONE}'
     )
-    ''', (config.DEFAULT_TIMEZONE,))
+    ''')
     
     conn.commit()
     conn.close()
