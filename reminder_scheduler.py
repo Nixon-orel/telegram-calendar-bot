@@ -4,6 +4,7 @@ import asyncio
 import datetime
 import time
 import os
+import pytz
 from telegram import Bot
 
 # Импорт конфигурации
@@ -30,40 +31,76 @@ async def send_reminder(bot, user_id, event_name, event_date, event_time):
     except Exception as e:
         logger.error(f"Ошибка при отправке напоминания: {e}")
 
+# Функция для получения часового пояса пользователя
+def get_user_timezone(user_id):
+    conn = sqlite3.connect(config.DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT timezone FROM user_settings WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    
+    if result:
+        timezone = result[0]
+    else:
+        # Если пользователя нет в базе, используем часовой пояс по умолчанию
+        timezone = config.DEFAULT_TIMEZONE
+    
+    conn.close()
+    return timezone
+
 async def check_reminders():
     """Проверяет напоминания и отправляет их, если время наступило"""
     bot = Bot(token=config.BOT_TOKEN)
     
     while True:
         try:
-            # Текущая дата и время
-            now = datetime.datetime.now()
-            current_date = now.strftime("%d.%m.%Y")
-            current_time = now.strftime("%H:%M")
-            
             # Подключение к базе данных
             conn = sqlite3.connect(config.DB_NAME)
             cursor = conn.cursor()
             
-            # Получаем напоминания, время которых наступило
-            cursor.execute("""
-                SELECT r.id, e.user_id, e.name, e.event_date, e.event_time 
-                FROM reminders r
-                JOIN events e ON r.event_id = e.id
-                WHERE r.reminder_date = ? AND r.reminder_time = ?
-            """, (current_date, current_time))
+            # Получаем всех пользователей с их часовыми поясами
+            cursor.execute("SELECT DISTINCT user_id FROM user_settings")
+            users = cursor.fetchall()
             
-            reminders = cursor.fetchall()
+            # Если нет пользователей в таблице user_settings, проверяем всех пользователей из таблицы events
+            if not users:
+                cursor.execute("SELECT DISTINCT user_id FROM events")
+                users = cursor.fetchall()
             
-            # Отправляем напоминания
-            for reminder in reminders:
-                reminder_id, user_id, event_name, event_date, event_time = reminder
-                await send_reminder(bot, user_id, event_name, event_date, event_time)
+            # Проверяем напоминания для каждого пользователя в его часовом поясе
+            for user in users:
+                user_id = user[0]
+                timezone_str = get_user_timezone(user_id)
                 
-                # Удаляем напоминание после отправки
-                cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+                try:
+                    # Получаем текущее время в часовом поясе пользователя
+                    timezone = pytz.timezone(timezone_str)
+                    now = datetime.datetime.now(timezone)
+                    current_date = now.strftime("%d.%m.%Y")
+                    current_time = now.strftime("%H:%M")
+                    
+                    # Получаем напоминания для этого пользователя, время которых наступило
+                    cursor.execute("""
+                        SELECT r.id, e.user_id, e.name, e.event_date, e.event_time
+                        FROM reminders r
+                        JOIN events e ON r.event_id = e.id
+                        WHERE e.user_id = ? AND r.reminder_date = ? AND r.reminder_time = ?
+                    """, (user_id, current_date, current_time))
+                    
+                    reminders = cursor.fetchall()
+                    
+                    # Отправляем напоминания
+                    for reminder in reminders:
+                        reminder_id, user_id, event_name, event_date, event_time = reminder
+                        await send_reminder(bot, user_id, event_name, event_date, event_time)
+                        
+                        # Удаляем напоминание после отправки
+                        cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
+                        conn.commit()
+                
+                except Exception as e:
+                    logger.error(f"Ошибка при проверке напоминаний для пользователя {user_id}: {e}")
             
-            conn.commit()
             conn.close()
             
         except Exception as e:

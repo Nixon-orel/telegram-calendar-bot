@@ -2,6 +2,7 @@ import logging
 import datetime
 import sqlite3
 import os
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
@@ -31,7 +32,8 @@ logger = logging.getLogger(__name__)
     ADDING_REMINDER_DATE,
     ADDING_REMINDER_TIME,
     CHOOSING_EVENT_TO_VIEW,
-) = range(9)
+    CHOOSING_TIMEZONE,
+) = range(10)
 
 # Функция для инициализации базы данных
 def init_db():
@@ -60,8 +62,53 @@ def init_db():
     )
     ''')
     
+    # Создаем таблицу для настроек пользователей
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS user_settings (
+        user_id INTEGER PRIMARY KEY,
+        timezone TEXT NOT NULL DEFAULT ?
+    )
+    ''', (config.DEFAULT_TIMEZONE,))
+    
     conn.commit()
     conn.close()
+
+# Функция для получения часового пояса пользователя
+def get_user_timezone(user_id):
+    conn = sqlite3.connect(config.DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT timezone FROM user_settings WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    
+    if result:
+        timezone = result[0]
+    else:
+        # Если пользователя нет в базе, добавляем его с часовым поясом по умолчанию
+        timezone = config.DEFAULT_TIMEZONE
+        cursor.execute("INSERT INTO user_settings (user_id, timezone) VALUES (?, ?)",
+                      (user_id, timezone))
+        conn.commit()
+    
+    conn.close()
+    return timezone
+
+# Функция для установки часового пояса пользователя
+def set_user_timezone(user_id, timezone):
+    conn = sqlite3.connect(config.DB_NAME)
+    cursor = conn.cursor()
+    
+    cursor.execute("INSERT OR REPLACE INTO user_settings (user_id, timezone) VALUES (?, ?)",
+                  (user_id, timezone))
+    
+    conn.commit()
+    conn.close()
+
+# Функция для получения текущего времени в часовом поясе пользователя
+def get_user_current_time(user_id):
+    timezone_str = get_user_timezone(user_id)
+    timezone = pytz.timezone(timezone_str)
+    return datetime.datetime.now(timezone)
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -77,7 +124,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         [InlineKeyboardButton("Добавить событие", callback_data="add_event")],
         [InlineKeyboardButton("Добавить напоминание", callback_data="add_reminder")],
         [InlineKeyboardButton("Просмотреть события", callback_data="view_events")],
-        [InlineKeyboardButton("Текущее время и дата", callback_data="current_time")]
+        [InlineKeyboardButton("Текущее время и дата", callback_data="current_time")],
+        [InlineKeyboardButton("Настройка часового пояса", callback_data="set_timezone")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -110,7 +158,10 @@ async def handle_menu_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif choice == "view_events":
         return await show_events(update, context)
     elif choice == "current_time":
-        now = datetime.datetime.now()
+        user_id = update.effective_user.id
+        now = get_user_current_time(user_id)
+        timezone_str = get_user_timezone(user_id)
+        
         formatted_date = now.strftime("%d.%m.%Y")
         formatted_time = now.strftime("%H:%M:%S")
         
@@ -118,10 +169,12 @@ async def handle_menu_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            text=f"Текущая дата: {formatted_date}\nТекущее время: {formatted_time}",
+            text=f"Текущая дата: {formatted_date}\nТекущее время: {formatted_time}\nЧасовой пояс: {timezone_str}",
             reply_markup=reply_markup
         )
         return CHOOSING_ACTION
+    elif choice == "set_timezone":
+        return await show_timezone_selection(update, context)
 
 # Добавление названия события
 async def add_event_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -419,6 +472,50 @@ async def view_event_details(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     return CHOOSING_ACTION
 
+# Показать выбор часового пояса
+async def show_timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = []
+    
+    # Создаем кнопки для каждого доступного часового пояса
+    for tz in config.AVAILABLE_TIMEZONES:
+        keyboard.append([InlineKeyboardButton(tz, callback_data=f"tz_{tz}")])
+    
+    keyboard.append([InlineKeyboardButton("Назад", callback_data="back_to_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.callback_query.edit_message_text(
+        text="Выберите ваш часовой пояс:",
+        reply_markup=reply_markup
+    )
+    
+    return CHOOSING_TIMEZONE
+
+# Установка часового пояса
+async def set_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    timezone = query.data.split("_", 1)[1]
+    user_id = update.effective_user.id
+    
+    # Сохраняем часовой пояс пользователя
+    set_user_timezone(user_id, timezone)
+    
+    # Получаем текущее время в выбранном часовом поясе
+    now = get_user_current_time(user_id)
+    formatted_date = now.strftime("%d.%m.%Y")
+    formatted_time = now.strftime("%H:%M:%S")
+    
+    keyboard = [[InlineKeyboardButton("Назад в главное меню", callback_data="back_to_menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        text=f"Часовой пояс установлен: {timezone}\n\nТекущая дата: {formatted_date}\nТекущее время: {formatted_time}",
+        reply_markup=reply_markup
+    )
+    
+    return CHOOSING_ACTION
+
 # Обработка команды /cancel
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Операция отменена.")
@@ -436,7 +533,7 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             CHOOSING_ACTION: [
-                CallbackQueryHandler(handle_menu_choice, pattern="^(add_event|add_reminder|view_events|current_time)$"),
+                CallbackQueryHandler(handle_menu_choice, pattern="^(add_event|add_reminder|view_events|current_time|set_timezone)$"),
                 CallbackQueryHandler(show_main_menu, pattern="^back_to_menu$"),
             ],
             ADDING_EVENT_NAME: [
@@ -464,6 +561,10 @@ def main():
             ],
             CHOOSING_EVENT_TO_VIEW: [
                 CallbackQueryHandler(view_event_details, pattern="^view_event_[0-9]+$"),
+                CallbackQueryHandler(show_main_menu, pattern="^back_to_menu$"),
+            ],
+            CHOOSING_TIMEZONE: [
+                CallbackQueryHandler(set_timezone, pattern="^tz_"),
                 CallbackQueryHandler(show_main_menu, pattern="^back_to_menu$"),
             ],
         },
