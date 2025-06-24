@@ -10,10 +10,20 @@ import time
 import signal
 import logging
 
+# Импорт конфигурации
+try:
+    import config
+    LOG_LEVEL = getattr(logging, config.LOG_LEVEL)
+except ImportError:
+    print("Файл конфигурации не найден. Пожалуйста, создайте файл config.py на основе config.py.example")
+    sys.exit(1)
+except AttributeError:
+    LOG_LEVEL = logging.INFO
+
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
+    level=LOG_LEVEL,
     filename='run.log'
 )
 logger = logging.getLogger(__name__)
@@ -23,9 +33,25 @@ if not os.path.exists('config.py'):
     print("Файл конфигурации не найден. Пожалуйста, создайте файл config.py на основе config.py.example")
     sys.exit(1)
 
-# Проверка наличия необходимых файлов
-required_files = ['main.py', 'reminder_scheduler.py']
+# Проверка наличия необходимых файлов и директорий
+required_files = ['main.py', 'reminder_scheduler.py', 'database.py']
 for file in required_files:
+    if not os.path.exists(file):
+        print(f"Файл {file} не найден. Убедитесь, что все необходимые файлы находятся в текущей директории.")
+        sys.exit(1)
+
+if not os.path.exists('handlers') or not os.path.isdir('handlers'):
+    print("Директория 'handlers' не найдена. Убедитесь, что структура проекта корректна.")
+    sys.exit(1)
+
+required_handler_files = [
+    'handlers/__init__.py',
+    'handlers/common.py',
+    'handlers/event_handlers.py',
+    'handlers/reminder_handlers.py',
+    'handlers/settings_handlers.py'
+]
+for file in required_handler_files:
     if not os.path.exists(file):
         print(f"Файл {file} не найден. Убедитесь, что все необходимые файлы находятся в текущей директории.")
         sys.exit(1)

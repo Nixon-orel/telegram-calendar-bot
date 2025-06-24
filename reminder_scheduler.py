@@ -1,9 +1,6 @@
 import logging
-import sqlite3
 import asyncio
 import datetime
-import time
-import os
 import pytz
 from telegram import Bot
 
@@ -13,6 +10,10 @@ try:
 except ImportError:
     print("Файл конфигурации не найден. Пожалуйста, создайте файл config.py на основе config.py.example")
     exit(1)
+
+# Импорт модулей
+import database
+from handlers.common import get_user_timezone
 
 # Настройка логирования
 logging.basicConfig(
@@ -31,23 +32,6 @@ async def send_reminder(bot, user_id, event_name, event_date, event_time):
     except Exception as e:
         logger.error(f"Ошибка при отправке напоминания: {e}")
 
-# Функция для получения часового пояса пользователя
-def get_user_timezone(user_id):
-    conn = sqlite3.connect(config.DB_NAME)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT timezone FROM user_settings WHERE user_id = ?", (user_id,))
-    result = cursor.fetchone()
-    
-    if result:
-        timezone = result[0]
-    else:
-        # Если пользователя нет в базе, используем часовой пояс по умолчанию
-        timezone = config.DEFAULT_TIMEZONE
-    
-    conn.close()
-    return timezone
-
 async def check_reminders():
     """Проверяет напоминания и отправляет их, если время наступило"""
     bot = Bot(token=config.BOT_TOKEN)
@@ -55,7 +39,7 @@ async def check_reminders():
     while True:
         try:
             # Подключение к базе данных
-            conn = sqlite3.connect(config.DB_NAME)
+            conn = database.sqlite3.connect(config.DB_NAME)
             cursor = conn.cursor()
             
             # Получаем всех пользователей с их часовыми поясами
@@ -95,8 +79,7 @@ async def check_reminders():
                         await send_reminder(bot, user_id, event_name, event_date, event_time)
                         
                         # Удаляем напоминание после отправки
-                        cursor.execute("DELETE FROM reminders WHERE id = ?", (reminder_id,))
-                        conn.commit()
+                        database.delete_reminder(reminder_id)
                 
                 except Exception as e:
                     logger.error(f"Ошибка при проверке напоминаний для пользователя {user_id}: {e}")
@@ -111,6 +94,9 @@ async def check_reminders():
 
 async def main():
     """Основная функция"""
+    # Инициализация базы данных
+    database.init_db()
+    
     logger.info("Планировщик напоминаний запущен")
     await check_reminders()
 
